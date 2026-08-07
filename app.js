@@ -1,0 +1,241 @@
+const catalog = window.QUERY_CATALOG || [];
+const state = {
+  token: null,
+  tokenClient: null,
+  selected: null,
+  category: "All",
+  rows: [],
+};
+
+const $ = (selector) => document.querySelector(selector);
+const elements = {
+  configForm: $("#configForm"), clientId: $("#clientId"), projectId: $("#projectId"), location: $("#location"),
+  dataset: $("#dataset"), tableName: $("#tableName"), inspectionTable: $("#inspectionTable"),
+  connectButton: $("#connectButton"), disconnectButton: $("#disconnectButton"), connectionChip: $("#connectionChip"),
+  querySearch: $("#querySearch"), categoryTabs: $("#categoryTabs"), queryGrid: $("#queryGrid"),
+  resultStatus: $("#resultStatus"), resultTitle: $("#resultTitle"), queryDetail: $("#queryDetail"),
+  copySqlButton: $("#copySqlButton"), dryRunButton: $("#dryRunButton"), runQueryButton: $("#runQueryButton"),
+  resultMeta: $("#resultMeta"), tableShell: $("#tableShell"), resultsTable: $("#resultsTable"), emptyState: $("#emptyState"), toast: $("#toast"),
+};
+
+const STORAGE_KEY = "gsc-bq-shortcuts-config-v1";
+const configFields = ["clientId", "projectId", "location", "dataset", "tableName", "inspectionTable"];
+
+function loadConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    configFields.forEach((key) => { if (saved[key]) elements[key].value = saved[key]; });
+  } catch { /* ignore malformed local settings */ }
+}
+
+function getConfig() {
+  const config = Object.fromEntries(configFields.map((key) => [key, elements[key].value.trim()]));
+  config.location ||= "US";
+  return config;
+}
+
+function saveConfig() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(getConfig()));
+}
+
+function validateIdentifier(value, label) {
+  if (!/^[A-Za-z0-9_:\-.]+$/.test(value)) throw new Error(`${label} contains an unsupported character.`);
+}
+
+function validateConfig({ clientId, projectId, dataset, tableName }) {
+  if (!clientId || !clientId.endsWith(".apps.googleusercontent.com")) throw new Error("Enter a valid Google OAuth client ID.");
+  if (!projectId || !dataset || !tableName) throw new Error("Project ID, dataset, and performance table are required.");
+  validateIdentifier(projectId, "Project ID"); validateIdentifier(dataset, "Dataset"); validateIdentifier(tableName, "Table name");
+}
+
+function hydrateSql(query) {
+  const config = getConfig();
+  if (!config.projectId || !config.dataset || !config.tableName) throw new Error("Complete the BigQuery source fields first.");
+  [config.projectId, config.dataset, config.tableName].forEach((value, index) => validateIdentifier(value, ["Project ID", "Dataset", "Table name"][index]));
+  const table = `${config.projectId}.${config.dataset}.${config.tableName}`;
+  const inspection = `${config.projectId}.${config.dataset}.${config.inspectionTable || "url_inspection"}`;
+  return query.sql.replaceAll("{{TABLE}}", table).replaceAll("{{INSPECTION_TABLE}}", inspection);
+}
+
+function showToast(message, isError = false) {
+  elements.toast.textContent = message;
+  elements.toast.className = `toast show${isError ? " error" : ""}`;
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => { elements.toast.className = "toast"; }, 4200);
+}
+
+function setConnected(connected) {
+  elements.connectionChip.classList.toggle("connected", connected);
+  elements.connectionChip.innerHTML = `<span></span>${connected ? " Connected to Google" : " Not connected"}`;
+  elements.connectButton.textContent = connected ? "Reconnect Google" : "Connect Google";
+  elements.disconnectButton.hidden = !connected;
+}
+
+function connectGoogle() {
+  try {
+    const config = getConfig(); validateConfig(config); saveConfig();
+    if (!window.google?.accounts?.oauth2) throw new Error("Google sign-in is still loading. Try again in a moment.");
+    state.tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: config.clientId,
+      scope: "https://www.googleapis.com/auth/bigquery",
+      callback: (response) => {
+        if (response.error) return showToast(response.error_description || response.error, true);
+        state.token = response.access_token;
+        setConnected(true);
+        showToast("Connected. Choose a shortcut and run it.");
+      },
+      error_callback: (error) => showToast(error.message || "Google authorization was closed.", true),
+    });
+    state.tokenClient.requestAccessToken({ prompt: state.token ? "" : "consent" });
+  } catch (error) { showToast(error.message, true); }
+}
+
+function disconnectGoogle() {
+  if (state.token && window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(state.token, () => {});
+  state.token = null; setConnected(false); showToast("Google connection removed.");
+}
+
+async function authorizedFetch(url, options = {}) {
+  if (!state.token) throw new Error("Connect your Google account first.");
+  const response = await fetch(url, {
+    ...options,
+    headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 401) { state.token = null; setConnected(false); throw new Error("Google authorization expired. Connect again."); }
+  if (!response.ok) throw new Error(payload.error?.message || `BigQuery returned ${response.status}.`);
+  return payload;
+}
+
+function renderCategories() {
+  const categories = ["All", ...new Set(catalog.map((query) => query.category))];
+  elements.categoryTabs.innerHTML = categories.map((category) => `<button class="category-tab${state.category === category ? " active" : ""}" data-category="${category}" role="tab" aria-selected="${state.category === category}">${category}</button>`).join("");
+}
+
+function renderQueries() {
+  const term = elements.querySearch.value.trim().toLowerCase();
+  const filtered = catalog.filter((query) => (state.category === "All" || query.category === state.category) && `${query.title} ${query.summary}`.toLowerCase().includes(term));
+  elements.queryGrid.innerHTML = filtered.length ? filtered.map((query) => `
+    <button class="query-card${state.selected?.id === query.id ? " selected" : ""}" data-id="${query.id}">
+      <span class="card-index">${query.id.toUpperCase()} · ${query.category}</span>
+      <h3>${query.title}</h3><p>${query.summary}</p>
+    </button>`).join("") : `<div class="no-results">No shortcut matches that filter.</div>`;
+}
+
+function selectQuery(id) {
+  state.selected = catalog.find((query) => query.id === id);
+  renderQueries();
+  elements.resultTitle.textContent = state.selected.title;
+  elements.resultStatus.textContent = `${state.selected.category} · Selected`;
+  let sql = "";
+  try { sql = hydrateSql(state.selected); } catch { sql = state.selected.sql; }
+  elements.queryDetail.innerHTML = `
+    <p>${state.selected.summary}</p>
+    ${state.selected.requiresInspectionTable ? '<p><strong>Requires:</strong> a populated URL Inspection table.</p>' : ""}
+    <details><summary>Inspect SQL and workbook notes</summary><pre><code>${escapeHtml(sql)}</code></pre><div class="query-note">${escapeHtml(state.selected.notes)}</div></details>`;
+  elements.copySqlButton.disabled = false;
+  elements.dryRunButton.disabled = false;
+  elements.runQueryButton.disabled = false;
+  elements.emptyState.hidden = false; elements.tableShell.hidden = true; elements.resultMeta.hidden = true;
+  $("#resultDrawer").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
+}
+
+async function dryRun() {
+  if (!state.selected) return;
+  const config = getConfig();
+  try {
+    elements.dryRunButton.disabled = true; elements.resultStatus.textContent = "Estimating bytes…";
+    const payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/jobs`, {
+      method: "POST",
+      body: JSON.stringify({ jobReference: { projectId: config.projectId, location: config.location }, configuration: { dryRun: true, query: { query: hydrateSql(state.selected), useLegacySql: false } } }),
+    });
+    const bytes = Number(payload.statistics?.totalBytesProcessed || 0);
+    elements.resultStatus.textContent = "Cost estimate ready";
+    showToast(`This query will scan about ${formatBytes(bytes)}.`);
+  } catch (error) { elements.resultStatus.textContent = "Estimate failed"; showToast(error.message, true); }
+  finally { elements.dryRunButton.disabled = false; }
+}
+
+async function runQuery() {
+  if (!state.selected) return;
+  const config = getConfig();
+  try {
+    validateConfig(config); saveConfig();
+    elements.runQueryButton.disabled = true; elements.dryRunButton.disabled = true;
+    elements.resultStatus.textContent = "Running in BigQuery…";
+    elements.resultMeta.hidden = true; elements.tableShell.hidden = true; elements.emptyState.hidden = false;
+    elements.emptyState.innerHTML = '<div class="empty-glyph">RUN<br />•••</div><p>BigQuery is processing the selected shortcut.</p>';
+    let payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries`, {
+      method: "POST",
+      body: JSON.stringify({ query: hydrateSql(state.selected), useLegacySql: false, location: config.location, maxResults: 1000, timeoutMs: 20000 }),
+    });
+    while (!payload.jobComplete) {
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries/${encodeURIComponent(payload.jobReference.jobId)}?location=${encodeURIComponent(config.location)}&maxResults=1000`);
+    }
+    renderResult(payload);
+  } catch (error) {
+    elements.resultStatus.textContent = "Query failed";
+    elements.emptyState.hidden = false;
+    elements.emptyState.innerHTML = `<div class="empty-glyph">ERROR<br />×</div><p>${escapeHtml(error.message)}</p>`;
+    showToast(error.message, true);
+  } finally {
+    elements.runQueryButton.disabled = false; elements.dryRunButton.disabled = false;
+  }
+}
+
+function renderResult(payload) {
+  const fields = payload.schema?.fields || [];
+  const rows = payload.rows || [];
+  state.rows = rows.map((row) => Object.fromEntries(fields.map((field, index) => [field.name, normalizeCell(row.f?.[index]?.v)])));
+  elements.resultStatus.textContent = "Query complete";
+  elements.resultMeta.hidden = false;
+  elements.resultMeta.innerHTML = `<span>${Number(payload.totalRows || state.rows.length).toLocaleString()} rows</span><span>${formatBytes(Number(payload.totalBytesProcessed || 0))} processed</span><span>${payload.cacheHit ? "cache hit" : "live execution"}</span><button class="text-button" id="downloadCsvButton" type="button">Download visible rows</button>`;
+  elements.emptyState.hidden = true; elements.tableShell.hidden = false;
+  if (!fields.length) {
+    elements.tableShell.hidden = true; elements.emptyState.hidden = false;
+    elements.emptyState.innerHTML = '<div class="empty-glyph">DONE<br />0</div><p>The query completed but returned no rows.</p>';
+    return;
+  }
+  elements.resultsTable.innerHTML = `<thead><tr>${fields.map((field) => `<th>${escapeHtml(field.name)}</th>`).join("")}</tr></thead><tbody>${state.rows.map((row) => `<tr>${fields.map((field) => `<td>${escapeHtml(formatCell(row[field.name]))}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  $("#downloadCsvButton")?.addEventListener("click", downloadCsv);
+}
+
+function normalizeCell(value) {
+  if (value && typeof value === "object") {
+    if (Array.isArray(value)) return value.map((item) => normalizeCell(item.v));
+    return JSON.stringify(value);
+  }
+  return value ?? "";
+}
+function formatCell(value) { return Array.isArray(value) ? value.join(", ") : value; }
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"]; const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index > 1 ? 2 : 0)} ${units[index]}`;
+}
+
+function downloadCsv() {
+  if (!state.rows.length) return;
+  const headers = Object.keys(state.rows[0]);
+  const csv = [headers, ...state.rows.map((row) => headers.map((header) => row[header]))]
+    .map((row) => row.map((value) => `"${String(formatCell(value)).replaceAll('"', '""')}"`).join(",")).join("\n");
+  const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  anchor.download = `${state.selected.id}-${state.selected.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.csv`; anchor.click(); URL.revokeObjectURL(anchor.href);
+}
+
+elements.connectButton.addEventListener("click", connectGoogle);
+elements.disconnectButton.addEventListener("click", disconnectGoogle);
+elements.configForm.addEventListener("change", saveConfig);
+elements.categoryTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-category]"); if (!button) return; state.category = button.dataset.category; renderCategories(); renderQueries(); });
+elements.queryGrid.addEventListener("click", (event) => { const card = event.target.closest("[data-id]"); if (card) selectQuery(card.dataset.id); });
+elements.querySearch.addEventListener("input", renderQueries);
+elements.copySqlButton.addEventListener("click", async () => { try { await navigator.clipboard.writeText(hydrateSql(state.selected)); showToast("SQL copied."); } catch (error) { showToast(error.message, true); } });
+elements.dryRunButton.addEventListener("click", dryRun);
+elements.runQueryButton.addEventListener("click", runQuery);
+
+loadConfig(); renderCategories(); renderQueries(); setConnected(false);
