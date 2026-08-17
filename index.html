@@ -107,6 +107,13 @@
             </div>
             <div class="page-scope-tabs" id="pageScopeTabs" role="tablist" aria-label="Limit every query to a page group"></div>
           </div>
+          <div class="word-scope" id="wordScope" hidden aria-labelledby="wordScopeLabel">
+            <div>
+              <span class="eyebrow" id="wordScopeLabel">Anagram word status</span>
+              <p>Classified from the word in <code>/anagram/[word]</code>.</p>
+            </div>
+            <div class="word-scope-tabs" id="wordScopeTabs" role="tablist" aria-label="Filter anagram URLs by dictionary status"></div>
+          </div>
           <div class="category-tabs" id="categoryTabs" role="tablist" aria-label="Query categories"></div>
           <div class="query-grid" id="queryGrid"></div>
         </section>
@@ -139,6 +146,7 @@
     </main>
 
     <div class="toast" id="toast" role="status"></div>
+    <script src="dictionary.js"></script>
     <script src="queries.js"></script>
     <script src="app.js"></script>
   </body>

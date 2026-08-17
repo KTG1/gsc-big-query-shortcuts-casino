@@ -5,12 +5,21 @@ const state = {
   selected: null,
   category: "All",
   pageScope: "all",
+  wordGroup: "all",
+  wordGroups: null,
+  wordGroupSignature: null,
   rows: [],
 };
 
 const PAGE_SCOPES = [
   { id: "all", label: "All pages", summary: "Every URL in the export", path: null },
   { id: "anagram", label: "/anagram/*", summary: "Only URLs inside the /anagram folder", path: "/anagram" },
+];
+
+const WORD_GROUPS = [
+  { id: "all", label: "All anagram words" },
+  { id: "dictionary", label: "Dictionary words" },
+  { id: "nonDictionary", label: "Non-dictionary words" },
 ];
 
 const $ = (selector) => document.querySelector(selector);
@@ -20,6 +29,7 @@ const elements = {
   connectButton: $("#connectButton"), disconnectButton: $("#disconnectButton"), connectionChip: $("#connectionChip"),
   querySearch: $("#querySearch"), categoryTabs: $("#categoryTabs"), queryGrid: $("#queryGrid"),
   pageScopeTabs: $("#pageScopeTabs"), pageScopeSummary: $("#pageScopeSummary"),
+  wordScope: $("#wordScope"), wordScopeTabs: $("#wordScopeTabs"),
   resultStatus: $("#resultStatus"), resultTitle: $("#resultTitle"), queryDetail: $("#queryDetail"),
   copySqlButton: $("#copySqlButton"), dryRunButton: $("#dryRunButton"), runQueryButton: $("#runQueryButton"),
   resultMeta: $("#resultMeta"), tableShell: $("#tableShell"), resultsTable: $("#resultsTable"), emptyState: $("#emptyState"), toast: $("#toast"),
@@ -62,9 +72,18 @@ function hydrateSql(query) {
   const table = `${config.projectId}.${config.dataset}.${config.tableName}`;
   const inspection = `${config.projectId}.${config.dataset}.${config.inspectionTable || "url_inspection"}`;
   const scope = PAGE_SCOPES.find((item) => item.id === state.pageScope) || PAGE_SCOPES[0];
-  const scopedSource = (source) => scope.path
-    ? `(SELECT * FROM \`${source}\` WHERE REGEXP_CONTAINS(url, r'^https?://[^/]+${scope.path}(?:/|$)'))`
-    : `\`${source}\``;
+  const scopedSource = (source) => {
+    if (!scope.path) return `\`${source}\``;
+    let wordCondition = "";
+    if (state.wordGroup !== "all") {
+      const slugs = state.wordGroups?.[state.wordGroup];
+      if (!slugs) throw new Error("Connect Google to classify the /anagram words before generating this SQL.");
+      const values = slugs.map((slug) => `'${slug.replaceAll("'", "''")}'`).join(", ");
+      const slugExpression = "LOWER(REGEXP_EXTRACT(url, r'^https?://[^/]+/anagram/([^/?#]+)'))";
+      wordCondition = slugs.length ? ` AND ${slugExpression} IN UNNEST([${values}])` : " AND FALSE";
+    }
+    return `(SELECT * FROM \`${source}\` WHERE REGEXP_CONTAINS(url, r'^https?://[^/]+${scope.path}(?:/|$)')${wordCondition})`;
+  };
   return query.sql
     .replaceAll("`{{TABLE}}`", scopedSource(table))
     .replaceAll("`{{INSPECTION_TABLE}}`", scopedSource(inspection))
@@ -136,6 +155,52 @@ function renderPageScopes() {
     </button>`).join("");
 }
 
+function renderWordGroups() {
+  elements.wordScope.hidden = state.pageScope !== "anagram";
+  elements.wordScopeTabs.innerHTML = WORD_GROUPS.map((group) => `
+    <button class="word-scope-tab${group.id === state.wordGroup ? " active" : ""}" data-word-group="${group.id}" role="tab" aria-selected="${group.id === state.wordGroup}">${group.label}</button>`).join("");
+}
+
+function configSignature() {
+  const config = getConfig();
+  return `${config.projectId}.${config.dataset}.${config.tableName}`;
+}
+
+async function prepareWordGroups() {
+  if (state.pageScope !== "anagram" || state.wordGroup === "all") return;
+  const config = getConfig();
+  validateConfig(config);
+  const signature = configSignature();
+  if (state.wordGroups && state.wordGroupSignature === signature) return;
+  if (!window.ENGLISH_DICTIONARY) throw new Error("The English dictionary could not be loaded.");
+
+  elements.resultStatus.textContent = "Classifying /anagram words…";
+  const table = `${config.projectId}.${config.dataset}.${config.tableName}`;
+  const query = `
+    SELECT DISTINCT LOWER(REGEXP_EXTRACT(url, r'^https?://[^/]+/anagram/([^/?#]+)')) AS slug
+    FROM \`${table}\`
+    WHERE REGEXP_CONTAINS(url, r'^https?://[^/]+/anagram(?:/|$)')`;
+  let payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries`, {
+    method: "POST",
+    body: JSON.stringify({ query, useLegacySql: false, location: config.location, maxResults: 100000, timeoutMs: 20000 }),
+  });
+  while (!payload.jobComplete) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries/${encodeURIComponent(payload.jobReference.jobId)}?location=${encodeURIComponent(config.location)}&maxResults=100000`);
+  }
+  const slugs = (payload.rows || []).map((row) => String(row.f?.[0]?.v || "").toLowerCase()).filter(Boolean);
+  const isDictionaryWord = (slug) => {
+    try { return /^[a-z]+$/.test(decodeURIComponent(slug)) && window.ENGLISH_DICTIONARY.has(decodeURIComponent(slug)); }
+    catch { return false; }
+  };
+  state.wordGroups = {
+    dictionary: slugs.filter(isDictionaryWord),
+    nonDictionary: slugs.filter((slug) => !isDictionaryWord(slug)),
+  };
+  state.wordGroupSignature = signature;
+  showToast(`Classified ${slugs.length.toLocaleString()} anagram URLs: ${state.wordGroups.dictionary.length.toLocaleString()} dictionary words, ${state.wordGroups.nonDictionary.length.toLocaleString()} non-dictionary words.`);
+}
+
 function renderQueries() {
   const term = elements.querySearch.value.trim().toLowerCase();
   const filtered = catalog.filter((query) => (state.category === "All" || query.category === state.category) && `${query.title} ${query.summary}`.toLowerCase().includes(term));
@@ -157,7 +222,7 @@ function renderSelectedQuery(scroll = true) {
   const scope = PAGE_SCOPES.find((item) => item.id === state.pageScope) || PAGE_SCOPES[0];
   elements.resultStatus.textContent = `${state.selected.category} · ${scope.label}`;
   let sql = "";
-  try { sql = hydrateSql(state.selected); } catch { sql = state.selected.sql; }
+  try { sql = hydrateSql(state.selected); } catch (error) { sql = `-- ${error.message}\n-- Connect Google, then use Copy SQL, Estimate cost, or Run query to prepare this filter.`; }
   elements.queryDetail.innerHTML = `
     <p>${state.selected.summary}</p>
     ${state.selected.requiresInspectionTable ? '<p><strong>Requires:</strong> a populated URL Inspection table.</p>' : ""}
@@ -177,6 +242,7 @@ async function dryRun() {
   if (!state.selected) return;
   const config = getConfig();
   try {
+    await prepareWordGroups();
     elements.dryRunButton.disabled = true; elements.resultStatus.textContent = "Estimating bytes…";
     const payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/jobs`, {
       method: "POST",
@@ -194,6 +260,7 @@ async function runQuery() {
   const config = getConfig();
   try {
     validateConfig(config); saveConfig();
+    await prepareWordGroups();
     elements.runQueryButton.disabled = true; elements.dryRunButton.disabled = true;
     elements.resultStatus.textContent = "Running in BigQuery…";
     elements.resultMeta.hidden = true; elements.tableShell.hidden = true; elements.emptyState.hidden = false;
@@ -259,20 +326,37 @@ function downloadCsv() {
 
 elements.connectButton.addEventListener("click", connectGoogle);
 elements.disconnectButton.addEventListener("click", disconnectGoogle);
-elements.configForm.addEventListener("change", saveConfig);
+elements.configForm.addEventListener("change", () => {
+  saveConfig();
+  state.wordGroups = null;
+  state.wordGroupSignature = null;
+  if (state.selected) renderSelectedQuery(false);
+});
 elements.categoryTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-category]"); if (!button) return; state.category = button.dataset.category; renderCategories(); renderQueries(); });
 elements.pageScopeTabs.addEventListener("click", (event) => {
   const button = event.target.closest("[data-page-scope]");
   if (!button) return;
   state.pageScope = button.dataset.pageScope;
   renderPageScopes();
+  renderWordGroups();
   if (state.selected) renderSelectedQuery(false);
   showToast(state.pageScope === "anagram" ? "Page group set to /anagram/*." : "Page group filter removed.");
 });
+elements.wordScopeTabs.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-word-group]");
+  if (!button) return;
+  state.wordGroup = button.dataset.wordGroup;
+  renderWordGroups();
+  try {
+    if (state.token) await prepareWordGroups();
+    if (state.selected) renderSelectedQuery(false);
+    showToast(`Anagram filter set to ${WORD_GROUPS.find((group) => group.id === state.wordGroup).label.toLowerCase()}.`);
+  } catch (error) { showToast(error.message, true); }
+});
 elements.queryGrid.addEventListener("click", (event) => { const card = event.target.closest("[data-id]"); if (card) selectQuery(card.dataset.id); });
 elements.querySearch.addEventListener("input", renderQueries);
-elements.copySqlButton.addEventListener("click", async () => { try { await navigator.clipboard.writeText(hydrateSql(state.selected)); showToast("SQL copied."); } catch (error) { showToast(error.message, true); } });
+elements.copySqlButton.addEventListener("click", async () => { try { await prepareWordGroups(); await navigator.clipboard.writeText(hydrateSql(state.selected)); renderSelectedQuery(false); showToast("SQL copied."); } catch (error) { showToast(error.message, true); } });
 elements.dryRunButton.addEventListener("click", dryRun);
 elements.runQueryButton.addEventListener("click", runQuery);
 
-loadConfig(); renderPageScopes(); renderCategories(); renderQueries(); setConnected(false);
+loadConfig(); renderPageScopes(); renderWordGroups(); renderCategories(); renderQueries(); setConnected(false);
