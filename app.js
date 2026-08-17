@@ -4,8 +4,14 @@ const state = {
   tokenClient: null,
   selected: null,
   category: "All",
+  pageScope: "all",
   rows: [],
 };
+
+const PAGE_SCOPES = [
+  { id: "all", label: "All pages", summary: "Every URL in the export", path: null },
+  { id: "anagram", label: "/anagram/*", summary: "Only URLs inside the /anagram folder", path: "/anagram" },
+];
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -13,6 +19,7 @@ const elements = {
   dataset: $("#dataset"), tableName: $("#tableName"), inspectionTable: $("#inspectionTable"),
   connectButton: $("#connectButton"), disconnectButton: $("#disconnectButton"), connectionChip: $("#connectionChip"),
   querySearch: $("#querySearch"), categoryTabs: $("#categoryTabs"), queryGrid: $("#queryGrid"),
+  pageScopeTabs: $("#pageScopeTabs"), pageScopeSummary: $("#pageScopeSummary"),
   resultStatus: $("#resultStatus"), resultTitle: $("#resultTitle"), queryDetail: $("#queryDetail"),
   copySqlButton: $("#copySqlButton"), dryRunButton: $("#dryRunButton"), runQueryButton: $("#runQueryButton"),
   resultMeta: $("#resultMeta"), tableShell: $("#tableShell"), resultsTable: $("#resultsTable"), emptyState: $("#emptyState"), toast: $("#toast"),
@@ -54,7 +61,15 @@ function hydrateSql(query) {
   [config.projectId, config.dataset, config.tableName].forEach((value, index) => validateIdentifier(value, ["Project ID", "Dataset", "Table name"][index]));
   const table = `${config.projectId}.${config.dataset}.${config.tableName}`;
   const inspection = `${config.projectId}.${config.dataset}.${config.inspectionTable || "url_inspection"}`;
-  return query.sql.replaceAll("{{TABLE}}", table).replaceAll("{{INSPECTION_TABLE}}", inspection);
+  const scope = PAGE_SCOPES.find((item) => item.id === state.pageScope) || PAGE_SCOPES[0];
+  const scopedSource = (source) => scope.path
+    ? `(SELECT * FROM \`${source}\` WHERE REGEXP_CONTAINS(url, r'^https?://[^/]+${scope.path}(?:/|$)'))`
+    : `\`${source}\``;
+  return query.sql
+    .replaceAll("`{{TABLE}}`", scopedSource(table))
+    .replaceAll("`{{INSPECTION_TABLE}}`", scopedSource(inspection))
+    .replaceAll("{{TABLE}}", table)
+    .replaceAll("{{INSPECTION_TABLE}}", inspection);
 }
 
 function showToast(message, isError = false) {
@@ -112,6 +127,15 @@ function renderCategories() {
   elements.categoryTabs.innerHTML = categories.map((category) => `<button class="category-tab${state.category === category ? " active" : ""}" data-category="${category}" role="tab" aria-selected="${state.category === category}">${category}</button>`).join("");
 }
 
+function renderPageScopes() {
+  const current = PAGE_SCOPES.find((scope) => scope.id === state.pageScope) || PAGE_SCOPES[0];
+  elements.pageScopeSummary.textContent = current.summary;
+  elements.pageScopeTabs.innerHTML = PAGE_SCOPES.map((scope) => `
+    <button class="page-scope-tab${scope.id === state.pageScope ? " active" : ""}" data-page-scope="${scope.id}" role="tab" aria-selected="${scope.id === state.pageScope}">
+      <span>${scope.label}</span>${scope.path ? '<i>Folder filter on</i>' : '<i>No path filter</i>'}
+    </button>`).join("");
+}
+
 function renderQueries() {
   const term = elements.querySearch.value.trim().toLowerCase();
   const filtered = catalog.filter((query) => (state.category === "All" || query.category === state.category) && `${query.title} ${query.summary}`.toLowerCase().includes(term));
@@ -125,8 +149,13 @@ function renderQueries() {
 function selectQuery(id) {
   state.selected = catalog.find((query) => query.id === id);
   renderQueries();
+  renderSelectedQuery();
+}
+
+function renderSelectedQuery(scroll = true) {
   elements.resultTitle.textContent = state.selected.title;
-  elements.resultStatus.textContent = `${state.selected.category} · Selected`;
+  const scope = PAGE_SCOPES.find((item) => item.id === state.pageScope) || PAGE_SCOPES[0];
+  elements.resultStatus.textContent = `${state.selected.category} · ${scope.label}`;
   let sql = "";
   try { sql = hydrateSql(state.selected); } catch { sql = state.selected.sql; }
   elements.queryDetail.innerHTML = `
@@ -137,7 +166,7 @@ function selectQuery(id) {
   elements.dryRunButton.disabled = false;
   elements.runQueryButton.disabled = false;
   elements.emptyState.hidden = false; elements.tableShell.hidden = true; elements.resultMeta.hidden = true;
-  $("#resultDrawer").scrollIntoView({ behavior: "smooth", block: "start" });
+  if (scroll) $("#resultDrawer").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function escapeHtml(value) {
@@ -232,10 +261,18 @@ elements.connectButton.addEventListener("click", connectGoogle);
 elements.disconnectButton.addEventListener("click", disconnectGoogle);
 elements.configForm.addEventListener("change", saveConfig);
 elements.categoryTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-category]"); if (!button) return; state.category = button.dataset.category; renderCategories(); renderQueries(); });
+elements.pageScopeTabs.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-page-scope]");
+  if (!button) return;
+  state.pageScope = button.dataset.pageScope;
+  renderPageScopes();
+  if (state.selected) renderSelectedQuery(false);
+  showToast(state.pageScope === "anagram" ? "Page group set to /anagram/*." : "Page group filter removed.");
+});
 elements.queryGrid.addEventListener("click", (event) => { const card = event.target.closest("[data-id]"); if (card) selectQuery(card.dataset.id); });
 elements.querySearch.addEventListener("input", renderQueries);
 elements.copySqlButton.addEventListener("click", async () => { try { await navigator.clipboard.writeText(hydrateSql(state.selected)); showToast("SQL copied."); } catch (error) { showToast(error.message, true); } });
 elements.dryRunButton.addEventListener("click", dryRun);
 elements.runQueryButton.addEventListener("click", runQuery);
 
-loadConfig(); renderCategories(); renderQueries(); setConnected(false);
+loadConfig(); renderPageScopes(); renderCategories(); renderQueries(); setConnected(false);
