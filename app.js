@@ -32,10 +32,14 @@ const elements = {
   wordScope: $("#wordScope"), wordScopeTabs: $("#wordScopeTabs"),
   resultStatus: $("#resultStatus"), resultTitle: $("#resultTitle"), queryDetail: $("#queryDetail"),
   copySqlButton: $("#copySqlButton"), dryRunButton: $("#dryRunButton"), runQueryButton: $("#runQueryButton"),
+  downloadFullButton: $("#downloadFullButton"),
   resultMeta: $("#resultMeta"), tableShell: $("#tableShell"), resultsTable: $("#resultsTable"), emptyState: $("#emptyState"), toast: $("#toast"),
 };
 
 const STORAGE_KEY = "gsc-bq-shortcuts-config-v1";
+const RENDER_ROW_LIMIT = 1000;
+const AUTO_DOWNLOAD_ROW_LIMIT = 5000;
+const QUERY_PAGE_SIZE = 10000;
 const configFields = ["clientId", "projectId", "location", "dataset", "tableName", "inspectionTable"];
 
 function loadConfig() {
@@ -78,9 +82,8 @@ function hydrateSql(query) {
     if (state.wordGroup !== "all") {
       const slugs = state.wordGroups?.[state.wordGroup];
       if (!slugs) throw new Error("Connect Google to classify the /anagram words before generating this SQL.");
-      const values = slugs.map((slug) => `'${slug.replaceAll("'", "''")}'`).join(", ");
       const slugExpression = "LOWER(REGEXP_EXTRACT(url, r'^https?://[^/]+/anagram/([^/?#]+)'))";
-      wordCondition = slugs.length ? ` AND ${slugExpression} IN UNNEST([${values}])` : " AND FALSE";
+      wordCondition = slugs.length ? ` AND ${slugExpression} IN UNNEST(@selected_slugs)` : " AND FALSE";
     }
     return `(SELECT * FROM \`${source}\` WHERE REGEXP_CONTAINS(url, r'^https?://[^/]+${scope.path}(?:/|$)')${wordCondition})`;
   };
@@ -89,6 +92,38 @@ function hydrateSql(query) {
     .replaceAll("`{{INSPECTION_TABLE}}`", scopedSource(inspection))
     .replaceAll("{{TABLE}}", table)
     .replaceAll("{{INSPECTION_TABLE}}", inspection);
+}
+
+function getQueryParameters() {
+  if (state.pageScope !== "anagram" || state.wordGroup === "all") return {};
+  const slugs = state.wordGroups?.[state.wordGroup] || [];
+  if (!slugs.length) return {};
+  return {
+    parameterMode: "NAMED",
+    queryParameters: [{
+      name: "selected_slugs",
+      parameterType: { type: "ARRAY", arrayType: { type: "STRING" } },
+      parameterValue: { arrayValues: slugs.map((value) => ({ value })) },
+    }],
+  };
+}
+
+async function collectQueryPages(payload, config, onProgress) {
+  const rows = [...(payload.rows || [])];
+  const jobId = payload.jobReference?.jobId;
+  let pageToken = payload.pageToken;
+  while (pageToken && jobId) {
+    onProgress?.(rows.length);
+    const url = new URL(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries/${encodeURIComponent(jobId)}`);
+    url.searchParams.set("location", config.location);
+    url.searchParams.set("maxResults", String(QUERY_PAGE_SIZE));
+    url.searchParams.set("pageToken", pageToken);
+    const page = await authorizedFetch(url.toString());
+    rows.push(...(page.rows || []));
+    pageToken = page.pageToken;
+  }
+  onProgress?.(rows.length);
+  return { ...payload, rows };
 }
 
 function showToast(message, isError = false) {
@@ -182,12 +217,13 @@ async function prepareWordGroups() {
     WHERE REGEXP_CONTAINS(url, r'^https?://[^/]+/anagram(?:/|$)')`;
   let payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries`, {
     method: "POST",
-    body: JSON.stringify({ query, useLegacySql: false, location: config.location, maxResults: 100000, timeoutMs: 20000 }),
+    body: JSON.stringify({ query, useLegacySql: false, location: config.location, maxResults: QUERY_PAGE_SIZE, timeoutMs: 20000 }),
   });
   while (!payload.jobComplete) {
     await new Promise((resolve) => setTimeout(resolve, 800));
-    payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries/${encodeURIComponent(payload.jobReference.jobId)}?location=${encodeURIComponent(config.location)}&maxResults=100000`);
+    payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries/${encodeURIComponent(payload.jobReference.jobId)}?location=${encodeURIComponent(config.location)}&maxResults=${QUERY_PAGE_SIZE}`);
   }
+  payload = await collectQueryPages(payload, config);
   const slugs = (payload.rows || []).map((row) => String(row.f?.[0]?.v || "").toLowerCase()).filter(Boolean);
   const isDictionaryWord = (slug) => {
     try { return /^[a-z]+$/.test(decodeURIComponent(slug)) && window.ENGLISH_DICTIONARY.has(decodeURIComponent(slug)); }
@@ -213,6 +249,8 @@ function renderQueries() {
 
 function selectQuery(id) {
   state.selected = catalog.find((query) => query.id === id);
+  state.rows = [];
+  elements.downloadFullButton.disabled = true;
   renderQueries();
   renderSelectedQuery();
 }
@@ -246,7 +284,7 @@ async function dryRun() {
     elements.dryRunButton.disabled = true; elements.resultStatus.textContent = "Estimating bytes…";
     const payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/jobs`, {
       method: "POST",
-      body: JSON.stringify({ jobReference: { projectId: config.projectId, location: config.location }, configuration: { dryRun: true, query: { query: hydrateSql(state.selected), useLegacySql: false } } }),
+      body: JSON.stringify({ jobReference: { projectId: config.projectId, location: config.location }, configuration: { dryRun: true, query: { query: hydrateSql(state.selected), useLegacySql: false, ...getQueryParameters() } } }),
     });
     const bytes = Number(payload.statistics?.totalBytesProcessed || 0);
     elements.resultStatus.textContent = "Cost estimate ready";
@@ -262,20 +300,25 @@ async function runQuery() {
     validateConfig(config); saveConfig();
     await prepareWordGroups();
     elements.runQueryButton.disabled = true; elements.dryRunButton.disabled = true;
+    elements.downloadFullButton.disabled = true; state.rows = [];
     elements.resultStatus.textContent = "Running in BigQuery…";
     elements.resultMeta.hidden = true; elements.tableShell.hidden = true; elements.emptyState.hidden = false;
     elements.emptyState.innerHTML = '<div class="empty-glyph">RUN<br />•••</div><p>BigQuery is processing the selected shortcut.</p>';
     let payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries`, {
       method: "POST",
-      body: JSON.stringify({ query: hydrateSql(state.selected), useLegacySql: false, location: config.location, maxResults: 1000, timeoutMs: 20000 }),
+      body: JSON.stringify({ query: hydrateSql(state.selected), useLegacySql: false, ...getQueryParameters(), location: config.location, maxResults: QUERY_PAGE_SIZE, timeoutMs: 20000 }),
     });
     while (!payload.jobComplete) {
       await new Promise((resolve) => setTimeout(resolve, 1100));
-      payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries/${encodeURIComponent(payload.jobReference.jobId)}?location=${encodeURIComponent(config.location)}&maxResults=1000`);
+      payload = await authorizedFetch(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(config.projectId)}/queries/${encodeURIComponent(payload.jobReference.jobId)}?location=${encodeURIComponent(config.location)}&maxResults=${QUERY_PAGE_SIZE}`);
     }
+    payload = await collectQueryPages(payload, config, (count) => {
+      elements.resultStatus.textContent = `Downloading full result… ${count.toLocaleString()} rows`;
+    });
     renderResult(payload);
   } catch (error) {
     elements.resultStatus.textContent = "Query failed";
+    elements.resultMeta.hidden = true; elements.tableShell.hidden = true; elements.downloadFullButton.disabled = true;
     elements.emptyState.hidden = false;
     elements.emptyState.innerHTML = `<div class="empty-glyph">ERROR<br />×</div><p>${escapeHtml(error.message)}</p>`;
     showToast(error.message, true);
@@ -288,17 +331,21 @@ function renderResult(payload) {
   const fields = payload.schema?.fields || [];
   const rows = payload.rows || [];
   state.rows = rows.map((row) => Object.fromEntries(fields.map((field, index) => [field.name, normalizeCell(row.f?.[index]?.v)])));
+  const visibleRows = state.rows.slice(0, RENDER_ROW_LIMIT);
   elements.resultStatus.textContent = "Query complete";
   elements.resultMeta.hidden = false;
-  elements.resultMeta.innerHTML = `<span>${Number(payload.totalRows || state.rows.length).toLocaleString()} rows</span><span>${formatBytes(Number(payload.totalBytesProcessed || 0))} processed</span><span>${payload.cacheHit ? "cache hit" : "live execution"}</span><button class="text-button" id="downloadCsvButton" type="button">Download visible rows</button>`;
+  elements.resultMeta.innerHTML = `<span>${state.rows.length.toLocaleString()} rows downloaded</span><span>${visibleRows.length.toLocaleString()} displayed</span><span>${formatBytes(Number(payload.totalBytesProcessed || 0))} processed</span><span>${payload.cacheHit ? "cache hit" : "live execution"}</span>`;
+  elements.downloadFullButton.disabled = !state.rows.length;
   elements.emptyState.hidden = true; elements.tableShell.hidden = false;
   if (!fields.length) {
     elements.tableShell.hidden = true; elements.emptyState.hidden = false;
     elements.emptyState.innerHTML = '<div class="empty-glyph">DONE<br />0</div><p>The query completed but returned no rows.</p>';
     return;
   }
-  elements.resultsTable.innerHTML = `<thead><tr>${fields.map((field) => `<th>${escapeHtml(field.name)}</th>`).join("")}</tr></thead><tbody>${state.rows.map((row) => `<tr>${fields.map((field) => `<td>${escapeHtml(formatCell(row[field.name]))}</td>`).join("")}</tr>`).join("")}</tbody>`;
-  $("#downloadCsvButton")?.addEventListener("click", downloadCsv);
+  elements.resultsTable.innerHTML = `<thead><tr>${fields.map((field) => `<th>${escapeHtml(field.name)}</th>`).join("")}</tr></thead><tbody>${visibleRows.map((row) => `<tr>${fields.map((field) => `<td>${escapeHtml(formatCell(row[field.name]))}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  if (state.rows.length > AUTO_DOWNLOAD_ROW_LIMIT) {
+    window.setTimeout(() => downloadCsv(true), 0);
+  }
 }
 
 function normalizeCell(value) {
@@ -315,13 +362,16 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 ** index).toFixed(index > 1 ? 2 : 0)} ${units[index]}`;
 }
 
-function downloadCsv() {
+function downloadCsv(automatic = false) {
   if (!state.rows.length) return;
   const headers = Object.keys(state.rows[0]);
   const csv = [headers, ...state.rows.map((row) => headers.map((header) => row[header]))]
     .map((row) => row.map((value) => `"${String(formatCell(value)).replaceAll('"', '""')}"`).join(",")).join("\n");
-  const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-  anchor.download = `${state.selected.id}-${state.selected.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.csv`; anchor.click(); URL.revokeObjectURL(anchor.href);
+  const scope = [state.pageScope, state.pageScope === "anagram" ? state.wordGroup : ""].filter(Boolean).join("-");
+  const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
+  anchor.download = `${state.selected.id}-${state.selected.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${scope}.csv`; anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1000);
+  showToast(automatic ? `The ${state.rows.length.toLocaleString()}-row result was too large to render fully, so its CSV download started automatically.` : `Downloading all ${state.rows.length.toLocaleString()} rows.`);
 }
 
 elements.connectButton.addEventListener("click", connectGoogle);
@@ -330,6 +380,8 @@ elements.configForm.addEventListener("change", () => {
   saveConfig();
   state.wordGroups = null;
   state.wordGroupSignature = null;
+  state.rows = [];
+  elements.downloadFullButton.disabled = true;
   if (state.selected) renderSelectedQuery(false);
 });
 elements.categoryTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-category]"); if (!button) return; state.category = button.dataset.category; renderCategories(); renderQueries(); });
@@ -337,6 +389,8 @@ elements.pageScopeTabs.addEventListener("click", (event) => {
   const button = event.target.closest("[data-page-scope]");
   if (!button) return;
   state.pageScope = button.dataset.pageScope;
+  state.rows = [];
+  elements.downloadFullButton.disabled = true;
   renderPageScopes();
   renderWordGroups();
   if (state.selected) renderSelectedQuery(false);
@@ -346,6 +400,8 @@ elements.wordScopeTabs.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-word-group]");
   if (!button) return;
   state.wordGroup = button.dataset.wordGroup;
+  state.rows = [];
+  elements.downloadFullButton.disabled = true;
   renderWordGroups();
   try {
     if (state.token) await prepareWordGroups();
@@ -355,8 +411,9 @@ elements.wordScopeTabs.addEventListener("click", async (event) => {
 });
 elements.queryGrid.addEventListener("click", (event) => { const card = event.target.closest("[data-id]"); if (card) selectQuery(card.dataset.id); });
 elements.querySearch.addEventListener("input", renderQueries);
-elements.copySqlButton.addEventListener("click", async () => { try { await prepareWordGroups(); await navigator.clipboard.writeText(hydrateSql(state.selected)); renderSelectedQuery(false); showToast("SQL copied."); } catch (error) { showToast(error.message, true); } });
+elements.copySqlButton.addEventListener("click", async () => { try { await prepareWordGroups(); const parameterNote = Object.keys(getQueryParameters()).length ? "-- Uses the named ARRAY<STRING> parameter @selected_slugs, populated by this tool.\n" : ""; await navigator.clipboard.writeText(parameterNote + hydrateSql(state.selected)); renderSelectedQuery(false); showToast("SQL copied."); } catch (error) { showToast(error.message, true); } });
 elements.dryRunButton.addEventListener("click", dryRun);
 elements.runQueryButton.addEventListener("click", runQuery);
+elements.downloadFullButton.addEventListener("click", () => downloadCsv(false));
 
 loadConfig(); renderPageScopes(); renderWordGroups(); renderCategories(); renderQueries(); setConnected(false);

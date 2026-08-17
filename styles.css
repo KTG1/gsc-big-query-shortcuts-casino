@@ -123,6 +123,8 @@ code { font: 400 11px var(--mono); background: var(--sky); padding: 2px 4px; }
 .result-drawer { border: 1px solid var(--line); background: var(--white); box-shadow: var(--shadow); min-height: 330px; }
 .result-header { display: flex; justify-content: space-between; gap: 20px; align-items: center; padding: 25px 28px; border-bottom: 1px solid var(--line); }
 .result-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.download-full:not(:disabled) { border-color: var(--green); color: var(--green); }
+.download-full:not(:disabled):hover { background: var(--green); color: var(--white); }
 .run { background: var(--navy); box-shadow: 4px 4px 0 #bfd7e2; }
 .run:hover { background: #062b45; }
 .query-detail { padding: 18px 28px; background: #f8faf9; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 13px; }
