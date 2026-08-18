@@ -99,9 +99,9 @@ code { font: 400 11px var(--mono); background: var(--sky); padding: 2px 4px; }
 .topic-tab:hover { border-color: var(--blue); }
 .topic-tab.active { border-color: var(--orange); background: var(--orange); color: var(--white); box-shadow: 3px 3px 0 #f7c0b2; }
 .topic-tab.active i { color: #ffe4dc; }
-.topic-tab[data-topic="3d-printing"].active { border-color: #4361a8; background: #4361a8; box-shadow: 3px 3px 0 #becaf0; }
-.topic-tab[data-topic="manufacturing"].active { border-color: var(--green); background: var(--green); box-shadow: 3px 3px 0 #addbc9; }
-.topic-tab[data-topic="laser"].active { border-color: #9a3f2d; background: #9a3f2d; box-shadow: 3px 3px 0 #e5b9af; }
+.intent-priority { margin-top: 0; border-top: 0; background: rgba(255,255,255,.72); }
+.topic-tab[data-country].active { border-color: var(--navy); background: var(--navy); box-shadow: 3px 3px 0 #bfd7e2; }
+.topic-tab[data-intent].active { border-color: var(--orange); background: var(--orange); box-shadow: 3px 3px 0 #f7c0b2; }
 .category-tabs { display: flex; gap: 6px; flex-wrap: wrap; padding: 24px 0 18px; }
 .category-tab { border: 1px solid var(--line); color: var(--muted); background: transparent; padding: 7px 10px; font: 500 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
 .category-tab.active { color: var(--white); border-color: var(--navy); background: var(--navy); }

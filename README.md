@@ -1,6 +1,6 @@
-# Xometry GSC BigQuery Shortcuts
+# Casino GSC BigQuery Shortcuts
 
-A browser-based dashboard for running reusable analyses against the Google Search Console bulk export in BigQuery, with industrial-topic prioritization for Xometry.
+A browser-based dashboard for running reusable analyses against the Google Search Console bulk export in BigQuery, with casino market and player-intent prioritization.
 
 ## What it includes
 
@@ -9,7 +9,7 @@ A browser-based dashboard for running reusable analyses against the Google Searc
 - Configurable GCP project, dataset, table, and BigQuery location
 - Query cost estimates through BigQuery dry runs
 - Results rendered in a sortable-friendly table and downloadable as CSV
-- One-click priority lenses for 3D printing, manufacturing, and laser intent
+- Coordinated country and casino-intent priority lenses
 - No backend and no stored client secret
 
 ## Google Cloud setup
@@ -44,8 +44,8 @@ The committed `queries.js` catalog is mechanically generated from the workbook e
 node scripts/build-query-catalog.mjs
 ```
 
-## Industrial priority lenses
+## Casino priority lenses
 
-After any shortcut runs, use the **3D printing**, **Manufacturing**, or **Laser** tab to rank matching rows first. Matching checks URL-, page-, query-, keyword-, search-, and term-like output fields before falling back to the rest of the row. The complete result set remains available; the selected lens changes its priority order rather than removing non-matching rows.
+After any shortcut runs, combine a country lens—such as **UK**, **US**, **Canada**, or **Australia**—with a player-intent lens such as **Best casinos**, **Bonuses**, **Slots**, **Live casino**, or **Payments**. Matching checks URL-, page-, query-, keyword-, search-, and term-like output fields before falling back to the rest of the row. The complete result set remains available; selected lenses change its priority order rather than removing non-matching rows.
 
-The CSV download follows the selected priority order. Select **All opportunities** to restore the query's original ranking.
+The CSV download follows the selected priority order. Select **All countries** and **All intents** to restore the query's original ranking.

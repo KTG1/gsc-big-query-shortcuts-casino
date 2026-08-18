@@ -4,18 +4,31 @@ const state = {
   tokenClient: null,
   selected: null,
   category: "All",
-  topic: "all",
+  country: "all",
+  intent: "all",
   baseRows: [],
   fields: [],
   resultStats: null,
   rows: [],
 };
 
-const TOPICS = [
-  { id: "all", label: "All opportunities", summary: "Keep the query's original ranking", terms: [] },
-  { id: "3d-printing", label: "3D printing", summary: "Surface additive-manufacturing demand first", terms: ["3d print", "3d printing", "additive manufacturing", "fdm", "sla", "sls", "dmls", "polyjet"] },
-  { id: "manufacturing", label: "Manufacturing", summary: "Prioritize production and machining intent", terms: ["manufacturing", "manufacturer", "cnc", "machining", "injection molding", "sheet metal", "die casting", "casting"] },
-  { id: "laser", label: "Laser", summary: "Bring laser processes and services to the top", terms: ["laser", "laser cutting", "laser cut", "laser engraving", "laser marking", "fiber laser", "co2 laser"] },
+const COUNTRIES = [
+  { id: "all", label: "All countries", summary: "Keep every market in its original order", terms: [] },
+  { id: "uk", label: "UK", summary: "Prioritize United Kingdom casino demand", terms: ["uk", "united kingdom", "britain", "british", "england", "co uk"] },
+  { id: "us", label: "US", summary: "Prioritize United States casino demand", terms: ["us", "usa", "united states", "american", "new jersey", "pennsylvania", "michigan"] },
+  { id: "canada", label: "Canada", summary: "Prioritize Canadian casino demand", terms: ["canada", "canadian", "ontario", "alberta", "quebec"] },
+  { id: "australia", label: "Australia", summary: "Prioritize Australian casino demand", terms: ["australia", "australian", "aussie"] },
+  { id: "germany", label: "Germany", summary: "Prioritize German casino demand", terms: ["germany", "german", "deutschland"] },
+  { id: "new-zealand", label: "New Zealand", summary: "Prioritize New Zealand casino demand", terms: ["new zealand", "new zealanders", "kiwi", "nz"] },
+];
+
+const INTENTS = [
+  { id: "all", label: "All intents", summary: "Keep the shortcut's original ranking", terms: [] },
+  { id: "best-casinos", label: "Best casinos", summary: "Surface comparison and top-list demand", terms: ["best casino", "best casinos", "top casino", "top casinos", "casino review", "casino reviews", "recommended casino"] },
+  { id: "bonuses", label: "Bonuses", summary: "Bring promotional and offer-led searches first", terms: ["casino bonus", "bonuses", "welcome bonus", "no deposit", "free spins", "promo code", "promotion"] },
+  { id: "slots", label: "Slots", summary: "Prioritize slot game and provider demand", terms: ["slots", "slot games", "online slots", "free slots", "jackpot slots", "slot provider"] },
+  { id: "live-casino", label: "Live casino", summary: "Prioritize live dealer and table-game demand", terms: ["live casino", "live dealer", "blackjack", "roulette", "baccarat", "poker"] },
+  { id: "payments", label: "Payments", summary: "Surface deposit, withdrawal, and payment intent", terms: ["payment", "deposit", "withdrawal", "payout", "paypal", "crypto casino", "bitcoin casino"] },
 ];
 
 const $ = (selector) => document.querySelector(selector);
@@ -24,7 +37,8 @@ const elements = {
   dataset: $("#dataset"), tableName: $("#tableName"), inspectionTable: $("#inspectionTable"),
   connectButton: $("#connectButton"), disconnectButton: $("#disconnectButton"), connectionChip: $("#connectionChip"),
   querySearch: $("#querySearch"), categoryTabs: $("#categoryTabs"), queryGrid: $("#queryGrid"),
-  topicTabs: $("#topicTabs"), topicSummary: $("#topicSummary"),
+  countryTabs: $("#countryTabs"), countrySummary: $("#countrySummary"),
+  intentTabs: $("#intentTabs"), intentSummary: $("#intentSummary"),
   resultStatus: $("#resultStatus"), resultTitle: $("#resultTitle"), queryDetail: $("#queryDetail"),
   copySqlButton: $("#copySqlButton"), dryRunButton: $("#dryRunButton"), runQueryButton: $("#runQueryButton"),
   downloadFullButton: $("#downloadFullButton"),
@@ -151,12 +165,18 @@ function renderCategories() {
   elements.categoryTabs.innerHTML = categories.map((category) => `<button class="category-tab${state.category === category ? " active" : ""}" data-category="${category}" role="tab" aria-selected="${state.category === category}">${category}</button>`).join("");
 }
 
-function renderTopics() {
-  const current = TOPICS.find((topic) => topic.id === state.topic) || TOPICS[0];
-  elements.topicSummary.textContent = current.summary;
-  elements.topicTabs.innerHTML = TOPICS.map((topic) => `
-    <button class="topic-tab${topic.id === state.topic ? " active" : ""}" data-topic="${topic.id}" role="tab" aria-selected="${topic.id === state.topic}">
-      <span>${topic.label}</span><i>${topic.id === "all" ? "Original order" : `${topic.terms.length} intent signals`}</i>
+function renderLenses() {
+  const country = COUNTRIES.find((item) => item.id === state.country) || COUNTRIES[0];
+  const intent = INTENTS.find((item) => item.id === state.intent) || INTENTS[0];
+  elements.countrySummary.textContent = country.summary;
+  elements.intentSummary.textContent = intent.summary;
+  elements.countryTabs.innerHTML = COUNTRIES.map((item) => `
+    <button class="topic-tab${item.id === state.country ? " active" : ""}" data-country="${item.id}" role="tab" aria-selected="${item.id === state.country}">
+      <span>${item.label}</span><i>${item.id === "all" ? "Global view" : `${item.terms.length} market signals`}</i>
+    </button>`).join("");
+  elements.intentTabs.innerHTML = INTENTS.map((item) => `
+    <button class="topic-tab${item.id === state.intent ? " active" : ""}" data-intent="${item.id}" role="tab" aria-selected="${item.id === state.intent}">
+      <span>${item.label}</span><i>${item.id === "all" ? "Original order" : `${item.terms.length} intent signals`}</i>
     </button>`).join("");
 }
 
@@ -181,8 +201,9 @@ function selectQuery(id) {
 
 function renderSelectedQuery(scroll = true) {
   elements.resultTitle.textContent = state.selected.title;
-  const topic = TOPICS.find((item) => item.id === state.topic) || TOPICS[0];
-  elements.resultStatus.textContent = `${state.selected.category} · ${topic.label}`;
+  const country = COUNTRIES.find((item) => item.id === state.country) || COUNTRIES[0];
+  const intent = INTENTS.find((item) => item.id === state.intent) || INTENTS[0];
+  elements.resultStatus.textContent = `${state.selected.category} · ${country.label} · ${intent.label}`;
   let sql = "";
   try { sql = hydrateSql(state.selected); } catch (error) { sql = `-- ${error.message}\n-- Connect Google, then use Copy SQL, Estimate cost, or Run query to prepare this filter.`; }
   elements.queryDetail.innerHTML = `
@@ -271,13 +292,13 @@ function textMatchesTerm(value, term) {
   return new RegExp(`(?:^|\\s)${normalizedTerm}(?:$|\\s)`).test(value);
 }
 
-function topicMatchScore(row, topic) {
-  if (!topic.terms.length) return 0;
+function lensMatchScore(row, lens) {
+  if (!lens.terms.length) return 0;
   const priorityValues = Object.entries(row)
     .filter(([key]) => /(url|page|query|keyword|search|term)/i.test(key))
     .map(([, value]) => normalizeMatchText(value));
   const fallbackValues = Object.values(row).map(normalizeMatchText);
-  return topic.terms.reduce((score, term) => {
+  return lens.terms.reduce((score, term) => {
     if (priorityValues.some((value) => textMatchesTerm(value, term))) return score + 3;
     if (fallbackValues.some((value) => textMatchesTerm(value, term))) return score + 1;
     return score;
@@ -285,16 +306,19 @@ function topicMatchScore(row, topic) {
 }
 
 function renderPrioritizedResult(allowAutomaticDownload = false) {
-  const topic = TOPICS.find((item) => item.id === state.topic) || TOPICS[0];
-  const rankedRows = state.baseRows.map((row, originalIndex) => ({ row, originalIndex, score: topicMatchScore(row, topic) }));
-  if (topic.id !== "all") rankedRows.sort((a, b) => b.score - a.score || a.originalIndex - b.originalIndex);
+  const country = COUNTRIES.find((item) => item.id === state.country) || COUNTRIES[0];
+  const intent = INTENTS.find((item) => item.id === state.intent) || INTENTS[0];
+  const hasLens = country.id !== "all" || intent.id !== "all";
+  const rankedRows = state.baseRows.map((row, originalIndex) => ({ row, originalIndex, score: lensMatchScore(row, country) + lensMatchScore(row, intent) }));
+  if (hasLens) rankedRows.sort((a, b) => b.score - a.score || a.originalIndex - b.originalIndex);
   state.rows = rankedRows.map(({ row }) => row);
   const matchedRows = rankedRows.filter(({ score }) => score > 0).length;
   const fields = state.fields;
   const visibleRows = state.rows.slice(0, RENDER_ROW_LIMIT);
-  elements.resultStatus.textContent = topic.id === "all" ? "Query complete" : `${topic.label} prioritized`;
+  const lensLabel = [country.id === "all" ? "" : country.label, intent.id === "all" ? "" : intent.label].filter(Boolean).join(" + ");
+  elements.resultStatus.textContent = hasLens ? `${lensLabel} prioritized` : "Query complete";
   elements.resultMeta.hidden = false;
-  elements.resultMeta.innerHTML = `<span>${state.rows.length.toLocaleString()} rows downloaded</span>${topic.id === "all" ? "" : `<span class="topic-match-meta">${matchedRows.toLocaleString()} ${escapeHtml(topic.label.toLowerCase())} matches ranked first</span>`}<span>${visibleRows.length.toLocaleString()} displayed</span><span>${formatBytes(state.resultStats?.totalBytesProcessed || 0)} processed</span><span>${state.resultStats?.cacheHit ? "cache hit" : "live execution"}</span>`;
+  elements.resultMeta.innerHTML = `<span>${state.rows.length.toLocaleString()} rows downloaded</span>${hasLens ? `<span class="topic-match-meta">${matchedRows.toLocaleString()} ${escapeHtml(lensLabel.toLowerCase())} matches ranked first</span>` : ""}<span>${visibleRows.length.toLocaleString()} displayed</span><span>${formatBytes(state.resultStats?.totalBytesProcessed || 0)} processed</span><span>${state.resultStats?.cacheHit ? "cache hit" : "live execution"}</span>`;
   elements.downloadFullButton.disabled = !state.rows.length;
   elements.emptyState.hidden = true; elements.tableShell.hidden = false;
   if (!fields.length) {
@@ -302,7 +326,7 @@ function renderPrioritizedResult(allowAutomaticDownload = false) {
     elements.emptyState.innerHTML = '<div class="empty-glyph">DONE<br />0</div><p>The query completed but returned no rows.</p>';
     return;
   }
-  elements.resultsTable.innerHTML = `<thead><tr>${fields.map((field) => `<th>${escapeHtml(field.name)}</th>`).join("")}</tr></thead><tbody>${visibleRows.map((row) => `<tr class="${topicMatchScore(row, topic) > 0 ? "topic-match" : ""}">${fields.map((field) => `<td>${escapeHtml(formatCell(row[field.name]))}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  elements.resultsTable.innerHTML = `<thead><tr>${fields.map((field) => `<th>${escapeHtml(field.name)}</th>`).join("")}</tr></thead><tbody>${visibleRows.map((row) => `<tr class="${lensMatchScore(row, country) + lensMatchScore(row, intent) > 0 ? "topic-match" : ""}">${fields.map((field) => `<td>${escapeHtml(formatCell(row[field.name]))}</td>`).join("")}</tr>`).join("")}</tbody>`;
   if (allowAutomaticDownload && state.rows.length > AUTO_DOWNLOAD_ROW_LIMIT) {
     window.setTimeout(() => downloadCsv(true), 0);
   }
@@ -332,7 +356,7 @@ function downloadCsv(automatic = false) {
   const csv = [headers, ...state.rows.map((row) => headers.map((header) => row[header]))]
     .map((row) => row.map((value) => `"${csvSafe(value).replaceAll('"', '""')}"`).join(",")).join("\n");
   const anchor = document.createElement("a"); anchor.href = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
-  anchor.download = `${state.selected.id}-${state.selected.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${state.topic}.csv`; anchor.click();
+  anchor.download = `${state.selected.id}-${state.selected.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${state.country}-${state.intent}.csv`; anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(anchor.href), 1000);
   showToast(automatic ? `The ${state.rows.length.toLocaleString()}-row result was too large to render fully, so its CSV download started automatically.` : `Downloading all ${state.rows.length.toLocaleString()} rows.`);
 }
@@ -347,15 +371,25 @@ elements.configForm.addEventListener("change", () => {
   if (state.selected) renderSelectedQuery(false);
 });
 elements.categoryTabs.addEventListener("click", (event) => { const button = event.target.closest("[data-category]"); if (!button) return; state.category = button.dataset.category; renderCategories(); renderQueries(); });
-elements.topicTabs.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-topic]");
+elements.countryTabs.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-country]");
   if (!button) return;
-  state.topic = button.dataset.topic;
-  renderTopics();
+  state.country = button.dataset.country;
+  renderLenses();
   if (state.baseRows.length) renderPrioritizedResult(false);
   else if (state.selected) renderSelectedQuery(false);
-  const topic = TOPICS.find((item) => item.id === state.topic);
-  showToast(topic.id === "all" ? "Original result order restored." : `${topic.label} matches will rank first.`);
+  const country = COUNTRIES.find((item) => item.id === state.country);
+  showToast(country.id === "all" ? "Global market view restored." : `${country.label} matches will rank first.`);
+});
+elements.intentTabs.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-intent]");
+  if (!button) return;
+  state.intent = button.dataset.intent;
+  renderLenses();
+  if (state.baseRows.length) renderPrioritizedResult(false);
+  else if (state.selected) renderSelectedQuery(false);
+  const intent = INTENTS.find((item) => item.id === state.intent);
+  showToast(intent.id === "all" ? "Original intent order restored." : `${intent.label} matches will rank first.`);
 });
 elements.queryGrid.addEventListener("click", (event) => { const card = event.target.closest("[data-id]"); if (card) selectQuery(card.dataset.id); });
 elements.querySearch.addEventListener("input", renderQueries);
@@ -364,4 +398,4 @@ elements.dryRunButton.addEventListener("click", dryRun);
 elements.runQueryButton.addEventListener("click", runQuery);
 elements.downloadFullButton.addEventListener("click", () => downloadCsv(false));
 
-loadConfig(); renderTopics(); renderCategories(); renderQueries(); setConnected(false);
+loadConfig(); renderLenses(); renderCategories(); renderQueries(); setConnected(false);
